@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Drill: 43 Gordon Square</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Courier New', Courier, monospace; background-color: #111; color: white; }
+        
+        /* UI OVERLAYS */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        /* START SCREEN */
+        #start-screen { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+            background: rgba(0,0,0,0.95); 
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            pointer-events: auto; z-index: 10;
+        }
+        button {
+            padding: 15px 30px; margin: 10px; font-size: 18px; cursor: pointer;
+            background: #d32f2f; color: white; border: none; border-radius: 5px; text-transform: uppercase;
+        }
+        button:hover { background: #b71c1c; }
+        
+        /* HUD */
+        #hud { display: none; padding: 20px; width: 100%; box-sizing: border-box; }
+        .bar-container { width: 300px; height: 20px; background: #333; border: 2px solid #555; margin-bottom: 10px; }
+        #oxygen-bar { width: 100%; height: 100%; background: #00bcd4; transition: width 0.2s; }
+        #timer { font-size: 24px; color: #ffeb3b; font-weight: bold; float: right; }
+        #interaction-prompt {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 24px; color: yellow; background: rgba(0,0,0,0.7); padding: 10px;
+            display: none; text-align: center;
+        }
+
+        /* GAME OVER / WIN */
+        #end-screen {
+            display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); z-index: 20;
+            flex-direction: column; align-items: center; justify-content: center; pointer-events: auto;
+        }
+        h1 { font-size: 40px; margin-bottom: 10px; }
+        p { font-size: 18px; max-width: 600px; text-align: center; line-height: 1.5; }
+
+        /* Crosshair */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 10px; height: 10px;
+            background: white; border-radius: 50%; transform: translate(-50%, -50%);
+            pointer-events: none; opacity: 0.5;
+        }
+    </style>
+    
+    <!-- IMPORT MAP: This fixes the "Failed to resolve module specifier" error -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.159.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <!-- START SCREEN -->
+    <div id="start-screen">
+        <h1>THE DRILL: 43 GORDON SQUARE</h1>
+        <p>Choose your avatar to begin Simulation</p>
+        <div style="display:flex;">
+            <button id="btn-male">Student ID: MALE</button>
+            <button id="btn-female">Student ID: FEMALE</button>
+        </div>
+        <p style="margin-top: 20px; font-size: 12px; color: #aaa;">Controls: WASD to Move | Mouse to Look | ENTER to Interact</p>
+    </div>
+
+    <!-- HUD -->
+    <div id="ui-layer">
+        <div id="hud">
+            <div id="timer">10:00</div>
+            <div>OXYGEN LEVEL</div>
+            <div class="bar-container"><div id="oxygen-bar"></div></div>
+        </div>
+        <div id="interaction-prompt">PRESS [ENTER] TO EXTINGUISH FIRE</div>
+        <div id="crosshair"></div>
+    </div>
+
+    <!-- END SCREEN -->
+    <div id="end-screen">
+        <h1 id="end-title">GAME OVER</h1>
+        <p id="end-reason">Reason...</p>
+        <button onclick="location.reload()">Try Again</button>
+    </div>
+
+    <!-- MAIN GAME SCRIPT -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+        // --- GAME VARIABLES ---
+        let camera, scene, renderer, controls;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let prevTime = performance.now();
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        
+        let oxygen = 100;
+        let gameActive = false;
+        let timeLeft = 600; // 10 minutes
+        let timerInterval;
+        
+        // Asset References
+        let extinguisher;
+        let smokeParticles = [];
+        
+        // --- SETUP ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x222222); // Brighter background
+            scene.fog = new THREE.FogExp2(0x222222, 0.015); 
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.y = 1.6; // Average eye height
+
+            // Lighting
+            const light = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
+            light.position.set(0, 20, 0);
+            scene.add(light);
+            
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.5); 
+            scene.add(ambientLight);
+            
+            // Flickering Emergency Light (Orange)
+            const alarmLight = new THREE.PointLight(0xff4500, 1, 30);
+            alarmLight.position.set(0, 3, 0);
+            scene.add(alarmLight);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Controls
+            controls = new PointerLockControls(camera, document.body);
+            document.addEventListener('click', () => { if(gameActive) controls.lock(); });
+            
+            scene.add(controls.getObject());
+
+            // Build Level
+            buildLevel();
+
+            // Event Listeners
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            window.addEventListener('resize', onWindowResize);
+            
+            // Bind Start Buttons explicitly
+            document.getElementById('btn-male').addEventListener('click', () => startGame('male'));
+            document.getElementById('btn-female').addEventListener('click', () => startGame('female'));
+        }
+
+        // --- LEVEL DESIGN ---
+        function buildLevel() {
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.8 });
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x554433, roughness: 0.9 }); 
+            const obstacleMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
+            
+            // 1. Floor (Extended Floor Plan)
+            const floorGeo = new THREE.PlaneGeometry(60, 50);
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.position.x = 10; 
+            scene.add(floor);
+
+            // 2. Room G02 Walls (The Spawn)
+            createWall(10, 4, 0, 2, -5, wallMat); // Back
+            createWall(10, 4, 0, 2, 5, wallMat); // Front
+            createWall(10, 4, -5, 2, 0, wallMat, true); // Left
+            createWall(10, 4, 5, 2, 0, wallMat, true); // Right (with hole logic implied by position)
+
+            // 3. Corridor (The Gauntlet)
+            createWall(50, 4, 30, 2, -3, wallMat); // Left Hall Wall
+            createWall(50, 4, 30, 2, 3, wallMat); // Right Hall Wall
+            
+            // 4. NEW OBSTACLES (Making it harder to see down the hall)
+            // A "Partition Wall" or "Notice Board" in the middle of the hall
+            createWall(1, 3, 25, 1.5, 0, wallMat, true); 
+            
+            // Random boxes cluttering the path
+            createBox(1, 1, 1, 10, 0.5, 0, 0x666666); 
+            createBox(1, 1, 1, 20, 0.5, 1.5, 0x666666);
+            createBox(1, 1, 1, 22, 0.5, -1.5, 0x666666);
+            createBox(1.5, 1.5, 1.5, 32, 0.75, 1, 0x666666);
+
+            // 5. The Lift (Danger Zone)
+            const liftGeo = new THREE.BoxGeometry(4, 3, 2);
+            const liftMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+            const lift = new THREE.Mesh(liftGeo, liftMat);
+            lift.position.set(15, 1.5, -4);
+            scene.add(lift);
+            
+            // Smoke Particles near lift
+            const smokeGeo = new THREE.PlaneGeometry(0.5, 0.5);
+            const smokeMat = new THREE.MeshBasicMaterial({ color: 0x555555, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+            
+            for(let i=0; i<50; i++) {
+                const particle = new THREE.Mesh(smokeGeo, smokeMat);
+                particle.position.set(
+                    15 + (Math.random() - 0.5) * 3,
+                    (Math.random() * 3),
+                    -3 + (Math.random() - 0.5) * 2
+                );
+                particle.userData = { speed: Math.random() * 0.02 + 0.01 };
+                scene.add(particle);
+                smokeParticles.push(particle);
+            }
+
+            // 6. RECEPTION AREA (The Goal)
+            // Reception Desk / Divider Wall at the end (Blocks view of extinguisher)
+            createWall(0.5, 2, 45, 1, 0, wallMat, true); // Center pillar/wall at end
+            createWall(4, 1.2, 45, 0.6, 2, wallMat); // Desk part right
+            createWall(4, 1.2, 45, 0.6, -2, wallMat); // Desk part left
+
+            // 7. The Extinguisher (Hidden behind the new wall/in the corner)
+            const extGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.8, 16);
+            const extMat = new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0x330000 });
+            extinguisher = new THREE.Mesh(extGeo, extMat);
+            
+            // Moved to a "nook" behind the reception area (x=48, z=4)
+            // You have to walk around the desk to see it.
+            extinguisher.position.set(48, 1.5, 4); 
+            extinguisher.rotation.z = Math.PI / 2;
+            scene.add(extinguisher);
+            
+            // Add a light on the extinguisher so it still POPS when you find it
+            const goalLight = new THREE.PointLight(0xffaaaa, 1, 8);
+            goalLight.position.set(48, 2, 4);
+            scene.add(goalLight);
+        }
+
+        // Helper: Create Wall
+        function createWall(w, h, x, y, z, mat, rotate=false) {
+            const geo = new THREE.BoxGeometry(w, h, 0.2);
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(x, y, z);
+            if(rotate) mesh.rotation.y = Math.PI / 2;
+            scene.add(mesh);
+        }
+
+        // Helper: Create Box (Obstacle)
+        function createBox(w,h,d, x,y,z, color) {
+            const geo = new THREE.BoxGeometry(w,h,d);
+            const mat = new THREE.MeshStandardMaterial({color: color});
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(x,y,z);
+            scene.add(mesh);
+        }
+
+        // --- CONTROLS ---
+        function onKeyDown(event) {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = true; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = true; break;
+                case 'ArrowRight': case 'KeyD': moveRight = true; break;
+                case 'Enter': checkWinCondition(); break;
+            }
+        }
+        function onKeyUp(event) {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = false; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = false; break;
+                case 'ArrowRight': case 'KeyD': moveRight = false; break;
+            }
+        }
+
+        // --- GAMEPLAY LOGIC ---
+        function checkWinCondition() {
+            if(!gameActive) return;
+            const dist = controls.getObject().position.distanceTo(extinguisher.position);
+            if(dist < 3) {
+                endGame(true);
+            }
+        }
+
+        function updateOxygen() {
+            if(!gameActive) return;
+            const playerPos = controls.getObject().position;
+            
+            // Check if near Lift (Danger Zone) x: 13-17, z: < -1
+            if(playerPos.x > 13 && playerPos.x < 17 && playerPos.z < -1) {
+                oxygen -= 0.2; 
+            } else {
+                oxygen -= 0.005; 
+            }
+
+            document.getElementById('oxygen-bar').style.width = oxygen + "%";
+
+            if(oxygen <= 0) {
+                endGame(false, "You suffocated from smoke inhalation.");
+            }
+        }
+
+        function startTimer() {
+            timerInterval = setInterval(() => {
+                if(!gameActive) return;
+                timeLeft--;
+                const minutes = Math.floor(timeLeft / 60);
+                const seconds = timeLeft % 60;
+                document.getElementById('timer').innerText = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+                
+                if(timeLeft <= 0) {
+                    endGame(false, "Time Limit Exceeded.");
+                }
+            }, 1000);
+        }
+
+        function endGame(win, reason="") {
+            gameActive = false;
+            controls.unlock();
+            document.getElementById('ui-layer').style.display = 'none';
+            document.getElementById('end-screen').style.display = 'flex';
+            clearInterval(timerInterval);
+
+            if(win) {
+                document.getElementById('end-title').innerText = "SAFE!";
+                document.getElementById('end-title').style.color = "#4caf50";
+                document.getElementById('end-reason').innerText = "You successfully located the CO2 Extinguisher and secured the reception.";
+            } else {
+                document.getElementById('end-title').innerText = "FAILED";
+                document.getElementById('end-title').style.color = "#d32f2f";
+                document.getElementById('end-reason').innerText = reason;
+            }
+        }
+
+        // --- MAIN LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (controls.isLocked === true) {
+                const time = performance.now();
+                const delta = (time - prevTime) / 1000;
+
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize(); 
+
+                if (moveForward || moveBackward) velocity.z -= direction.z * 40.0 * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * 40.0 * delta;
+
+                controls.moveRight(-velocity.x * delta);
+                controls.moveForward(-velocity.z * delta);
+
+                if (controls.getObject().position.y < 1.6) controls.getObject().position.y = 1.6;
+
+                const dist = controls.getObject().position.distanceTo(extinguisher.position);
+                const prompt = document.getElementById('interaction-prompt');
+                if(dist < 3) {
+                    prompt.style.display = 'block';
+                    prompt.style.color = 'red';
+                } else {
+                    prompt.style.display = 'none';
+                }
+
+                prevTime = time;
+                
+                smokeParticles.forEach(p => {
+                    p.position.y += p.userData.speed;
+                    if(p.position.y > 3) p.position.y = 0;
+                });
+
+                updateOxygen();
+            }
+            renderer.render(scene, camera);
+        }
+
+        // --- GLOBAL EXPORTS ---
+        function startGame(gender) {
+            document.getElementById('start-screen').style.display = 'none';
+            document.getElementById('hud').style.display = 'block';
+            gameActive = true;
+            controls.lock(); 
+            
+            if(gender === 'female') {
+                camera.position.y = 1.55; 
+            } else {
+                camera.position.y = 1.70;
+            }
+            startTimer();
+        };
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        init();
+        animate();
+    </script>
+</body>
+</html>
